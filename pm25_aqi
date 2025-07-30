@@ -1,0 +1,210 @@
+//*Pins:
+ //*Plantower Pin 1 5V to 5V on Arduino
+ //*Plantower Pin 2 GND to GND on Arduino
+ //*Plantower Pin 3 SET to 3.3V on Arduino (if 0 V it will put the sensor in a low-power standby)
+ //*Plantower Pin 4 RX to Digital Pin 4 on Arduino (which will act as the transmitting pin on the Arduino sending data to the sensor's recieving pin 4)
+ //*Plantower Pin 5 TX to Digital Pin 3 on Arduino (which will act as the recieving pin on the Arduino taking data from the sensor's transmitting pin 5)
+ //*Plantower Pin 6 RESET does not need to be connected, if set to 0V the sensor will reset
+ //*Plantower Pin 7 & 8 Not Connected
+
+ //*I2C LCD Screen is optional; code will work without it
+ //*I2C LCD Screen Gnd to Arduino Gnd on Arduino
+ //*I2C LCD Screen Vcc to 5V on Arduino
+ //*I2C LCD Screen SDA to Pin A5 on Arduino
+ //*I2C LCD Screen SCL to Pin A4 on Arduino
+
+ //*SD Card Reader is optional; code will work without it
+ //*SD Card Reader Gnd to Arduino Gnd on Arduino
+ //*SD Card Reader Vcc to 5V on Arduino
+ //*SD Card Reader MISO to Pin 12 on Arduino
+ //*SD Card Reader MOSI to Pin 11 on Arduino
+ //*SD Card Reader SCK (CLOCK) to Pin 13 on Arduino
+ //*SD Card Reader CS to Pin 10 on Arduino (may change for different card readers)
+ 
+ //*The TX pin on the sensor connects to pin 11 on the Arduino
+ //
+ //*Plantower Reading Portion of Code altered from: Zuyang @ HUST, Date：March.25.2016
+ //******************************
+
+#include <SoftwareSerial.h>  //package allowing serial communication
+#include <LiquidCrystal_I2C.h> //include LiquidCrystal_I2C library if lc display is attached
+#include <SD.h>//needed for sd card reader communication
+
+LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x27 for a 16 chars and 2 line display, NOTE: Some I2C LCDs will need the address changed from 0x27 to 0x3F
+
+//Define the length of the information beingretrieved from the sensor, this portion must change for different sensor models
+//#define LENG 31   //0x42 + 31 bytes equal to 32 bytes, Use for Model 1003, 5003
+#define LENG 23   //0x42 + 21 bytes equal to 24 bytes, Use for Model 3003
+#define TIME_BETWEEN_READINGS 1000  //number of milliseconds between readings from the sensor (should be more than once a second)
+
+const bool useplotter = false; //true if using arduino's built-in serial plotter, false otherwise. Use false is plotting with python
+const int chipSelect = 10;//pin for chip select (CS) on microsd card reader (reader is optional)
+unsigned char buf[LENG];  //Contains the information from the sensor
+
+unsigned short PM01=-1;          //variable that will hold the PM1.0 value 
+unsigned short PM25=-1;         //variable that will hold the define PM2.5 value 
+unsigned short PM10=-1;         //variable that will hold the define PM10 value 
+unsigned short PMavg=-1;           //Average of all PM readings
+bool useSD=true;       //goes false if there is an SD reader error
+
+unsigned short i=0;  // just a counter
+bool gotitright=false; //true if the buffer length was right, to account for different plantower models
+String SD_String="";//where the string for the SD card data will be kept
+static unsigned long lastReadingTime=0;  //variable to keep track of time (in ms) of last reading
+//NOTE if the sensor never connects appropriately, then it will read -1 concentration
+
+// Pin 3 will be the Arduino's RX (recieving pin) connected to the sensor's TX (Plantower Pin 5)
+// Pin 4 will be the Arduino's TX (transmitting pin) connected to the sensor's RX (Plantower Pin 4)
+SoftwareSerial PMSerial(3, 4);   //initialize the serial connection, 3 & 4 are the digital pin numbers used on the arduino
+
+byte Char2p[8] = {//create a 2 with a point character
+ 0b01100,  0b10010,  0b00010,  0b00100,  0b01000,  0b10000,  0b11110,  0b00001};
+byte Char5[8] = {//create a smaller 5 characer 
+  0b01111,  0b01000,  0b01000,  0b00110,  0b00001,  0b00001,  0b01110,  0b00000};
+byte Char10[8] = {  //create a 10 character
+  0b00000,  0b10111,  0b10101,  0b10101,  0b10101,  0b10101,  0b10111,  0b00000};
+
+void setup()
+{
+  PMSerial.begin(9600);   //Serial communication with the sensor
+  PMSerial.setTimeout(1500);    //Time to wait for sensor to respond (should sample each second, at most)
+  Serial.begin(9600);  //Serial communication with a possible computer through the USB cable
+  while (!Serial) {;} // wait for serial port to connect. Needed for native USB port only
+
+  Serial.println("Starting LCD...");
+  lcd.init();                      // initialize the lcd 
+  lcd.backlight();   //turn on the backlight
+  lcd.setCursor(0,0);    //place the cursor
+  lcd.print("Starting!..");  //let the user know it's starting
+  delay(500);
+  Serial.println("LCD Initialized...");
+  
+  if (!useplotter) {Serial.println("Initializing card."); }
+  if (!SD.begin(chipSelect)) {if (!useplotter) {Serial.println("Card failed, or not present"); lcd.setCursor(0,0); lcd.print("Card NOT found.");}}//start talking to the SD card reader
+  else {if (!useplotter) {Serial.println("Card initialized."); lcd.setCursor(0,0); lcd.print("Card detected.");}}
+
+  File dataFile = SD.open("PM_Data.csv", FILE_WRITE); //Open a file named PM_Data.csv
+  randomSeed(analogRead(0)+dataFile.size());//seed the random number generator with something a bit random...
+  if (!useplotter) {Serial.print("File Size: ");Serial.println(dataFile.size());}
+  SD_String="RunID: "+String(random(0,10))+String(random(0,10))+String(random(0,10))+String(random(0,10));
+  if (!useplotter) {Serial.print("Run ID: ");Serial.println(SD_String);}
+  
+  lcd.setCursor(0,1);    //place the cursor
+  lcd.print(SD_String);
+  lcd.createChar(0, Char2p); // Sends the custom char to lcd
+  lcd.createChar(1, Char5); // Sends the custom char to lcd
+  lcd.createChar(2, Char10); // Sends the custom char to lcd
+
+  if (dataFile) { //if the file opened correctly (SD reader attached)
+    dataFile.println(SD_String);//print RunID in the file
+    SD_String="t(s),PM1.0 (ug/m3),PM2.5 (ug/m3),PM10 (ug/m3)";   //header for csv file to be created on SD card
+    dataFile.println(SD_String);//print the header in the file
+    dataFile.close();//close the file
+  }
+  else {
+    Serial.println("Error opening data file on SD card"); //alert user to error
+    useSD=false;//stop trying to use the SD reader
+  }
+  delay(4000);//pause so user can get session ID
+  if (!useplotter) {Serial.print("t(s)\t");Serial.print("PM1.0\t");Serial.print("PM2.5\t");Serial.print("PM10\t");Serial.println("PMavg");} //alert user to error
+}
+
+void loop()  //This is what the Arduino will do over and over, while it has power
+{
+  String SD_String = "";//data to be written to SD card
+  if(PMSerial.find(0x42)){    //check if there is a serial connection to the sensor
+    PMSerial.readBytes(buf,LENG);  //read the information from the sensor and put it in the variable buf
+    if(buf[0] == 0x4d){  //first read value
+      if(checkValue(buf,LENG)){//check if some data of some length was recieved from the sensor
+        PM01=transmitPM01(buf); //count PM1.0 value of the air detector module
+        PM25=transmitPM2_5(buf);//count PM2.5 value of the air detector module
+        PM10=transmitPM10(buf); //count PM10 value of the air detector module 
+        PMavg=(PM01+PM25+PM10)/3; //find the average PM count
+      }           
+    } 
+  }
+  
+  if (millis() - lastReadingTime >=TIME_BETWEEN_READINGS)   //Take a reading every TIME_BETWEEN_READINGS
+    {
+      if (useSD){ //SD reader still good
+        SD_String = String(int(round(lastReadingTime/1000)))+","+String(PM01)+","+String(PM25)+","+String(PM10)+","; //data: time and the PM values
+        File dataFile = SD.open("PM_Data.csv", FILE_WRITE); //open the file
+        if (dataFile) {  //if it opened correctly...
+          dataFile.println(SD_String);  //write the data to the file
+          dataFile.close();   //close the file 
+        }
+        else {
+          Serial.println("Error opening data file on SD card"); //alert to possible error
+        }
+      }
+      
+      lastReadingTime = millis(); //update time of last reading
+      
+      if (!useplotter){Serial.print(int(round(lastReadingTime/1000)));Serial.print("\t");}
+      Serial.print(PM01);Serial.print("\t");
+      Serial.print(PM25);Serial.print("\t");
+      Serial.print(PM10);Serial.print("\t");
+      Serial.print(PMavg);Serial.println("");
+      
+      lcd.clear();   //clear the lcd
+      lcd.setCursor(0,0);        //print to the lcd
+      lcd.print(" t: "); //time
+      lcd.print(int(round(lastReadingTime/1000)));
+      
+      lcd.setCursor(8,0);        //PM1.0
+      lcd.print(" 1: ");  
+      lcd.print(PM01);  
+
+      lcd.setCursor(0,1);        //PM2.5
+      lcd.print((char)0);  // 2. character
+      lcd.print((char)1);  // 5 character
+      lcd.print(": ");  
+      lcd.print(PM25); 
+
+      lcd.setCursor(9,1);        
+      lcd.print((char)2);  //10 character
+      lcd.print(": ");  
+      lcd.print(PM10);
+    }
+  
+}
+char checkValue(unsigned char *thebuf, char leng)
+{  
+  char receiveflag=0;
+  int receiveSum=0;
+
+  for(int i=0; i<(leng-2); i++){
+    receiveSum=receiveSum+thebuf[i];
+  }
+  receiveSum=receiveSum + 0x42;
+ 
+  if(receiveSum == ((thebuf[leng-2]<<8)+thebuf[leng-1]))  //check the serial data 
+  {
+    receiveSum = 0;
+    receiveflag = 1;
+  }
+  return receiveflag;
+}
+
+int transmitPM01(unsigned char *thebuf)
+{
+  int PM01Val;
+  PM01Val=((thebuf[3]<<8) + thebuf[4]); //count PM1.0 value of the air detector module
+  return PM01Val;
+}
+
+//transmit PM Value to PC
+int transmitPM2_5(unsigned char *thebuf)
+{
+  int PM2_5Val;
+  PM2_5Val=((thebuf[5]<<8) + thebuf[6]);//count PM2.5 value of the air detector module
+  return PM2_5Val;
+  }
+
+//transmit PM Value to PC
+int transmitPM10(unsigned char *thebuf)
+{
+  int PM10Val;
+  PM10Val=((thebuf[7]<<8) + thebuf[8]); //count PM10 value of the air detector module  
+  return PM10Val;
+}
