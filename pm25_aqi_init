@@ -1,0 +1,26 @@
+
+          aqStatus = "Moderate";
+        } else {
+          aqStatus = "Unhealthy";
+        }
+
+        // Debug to Serial
+        Serial.print("Tick: "); Serial.print(tick);
+        Serial.print(" | PM1.0: "); Serial.print(pm1);
+        Serial.print(" | PM2.5: "); Serial.print(pm25);
+        Serial.print(" | PM10: "); Serial.print(pm10);
+        Serial.print(" | AQ: "); Serial.println(aqStatus);
+
+        // Update LCD
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("PM2.5:"); lcd.print(pm25);
+        lcd.print(" T:"); lcd.print(tick);
+
+        lcd.setCursor(0, 1);
+        lcd.print("Air: ");
+        lcd.print(aqStatus);
+      }
+    }
+  }
+}
