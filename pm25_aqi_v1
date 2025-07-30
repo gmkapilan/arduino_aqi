@@ -1,0 +1,68 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Use 0x3F if needed
+
+unsigned long tick = 0;
+
+void setup() {
+  Serial.begin(9600);
+  Serial1.begin(9600); // PMS sensor
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Waiting for PMS...");
+}
+
+void loop() {
+  if (Serial1.available() >= 32) {
+    // Look for the header 0x42 0x4D
+    if (Serial1.read() == 0x42 && Serial1.peek() == 0x4D) {
+      Serial1.read(); // discard 0x4D
+
+      byte buffer[30];
+      Serial1.readBytes(buffer, 30);
+
+      // Calculate checksum
+      uint16_t receivedChecksum = (buffer[28] << 8) | buffer[29];
+      uint16_t calculatedChecksum = 0x42 + 0x4D;
+
+      for (int i = 0; i < 28; i++) {
+        calculatedChecksum += buffer[i];
+      }
+
+      if (receivedChecksum == calculatedChecksum) {
+        tick++;
+        uint16_t pm1  = (buffer[4] << 8) | buffer[5];
+        uint16_t pm25 = (buffer[6] << 8) | buffer[7];
+        uint16_t pm10 = (buffer[8] << 8) | buffer[9];
+
+        // Determine air quality level
+        String level;
+        if (pm25 <= 30) level = "Good";
+        else if (pm25 <= 60) level = "Moderate";
+        else level = "Unhealthy";
+
+        // Print to Serial
+        Serial.print("Tick: "); Serial.print(tick);
+        Serial.print(" | PM1: "); Serial.print(pm1);
+        Serial.print(" | PM2.5: "); Serial.print(pm25);
+        Serial.print(" | PM10: "); Serial.print(pm10);
+        Serial.print(" | AQ: "); Serial.println(level);
+
+        // Update LCD
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("PM2.5:"); lcd.print(pm25);
+        lcd.print(" T:"); lcd.print(tick);
+
+        lcd.setCursor(0, 1);
+        lcd.print("Air: "); lcd.print(level);
+      } else {
+        Serial.println("Checksum error");
+      }
+    }
+  }
+}
+
